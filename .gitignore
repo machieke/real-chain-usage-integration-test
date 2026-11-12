@@ -1,1 +1,6 @@
 *~
+.local/
+node_modules/
+artifacts/
+*.env
+*.rhoc

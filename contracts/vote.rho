@@ -1,0 +1,35 @@
+new votes, ballot, uriCh,
+    insert(`rho:registry:insertArbitrary`),
+    vaultAddress(`rho:vault:address`),
+    deployId(`rho:system:deployId`)
+in {
+  votes!({}) |
+  contract ballot(@op, voter, @choice, ret) = {
+    match op {
+      "vote" => {
+        if (choice == "yes" or choice == "no") {
+          new addressCh in {
+            vaultAddress!("fromDeployerId", *voter, *addressCh) |
+            for (@address <- addressCh; @current <- votes) {
+              if (current.contains(address)) {
+                votes!(current) |
+                ret!({"status": "error", "error": "AlreadyVoted"})
+              } else {
+                votes!(current.set(address, choice)) |
+                ret!({"status": "ok", "voter": address, "choice": choice})
+              }
+            }
+          }
+        } else {
+          ret!({"status": "error", "error": "InvalidChoice"})
+        }
+      }
+      "snapshot" => {
+        for (@current <<- votes) { ret!(current) }
+      }
+      _ => ret!({"status": "error", "error": "UnknownOperation"})
+    }
+  } |
+  insert!(bundle+{*ballot}, *uriCh) |
+  for (@uri <- uriCh) { deployId!(uri) }
+}
