@@ -56,7 +56,7 @@ export async function sourceSnapshot(c, observer, ballot, items) {
   const [actual] = await observer.explore(snapshotTerm(ballot), block.blockHash);
   if (!actual || Array.isArray(actual) || typeof actual !== 'object') throw new Error('Vote snapshot missing');
   const votes = voteDifferences(items, actual);
-  const locks = await mapLimit(items.filter(i => i.kind === 'bridge'), 4, async item => {
+  const locks = await mapLimit(items.filter(i => i.kind === 'bridge'), 1, async item => {
     // getDataAtName is event-indexed: a later block with no send to this name
     // returns no result. Read the receipt at inclusion, then reconcile its
     // nonce against the current finalized contract state below.
@@ -78,7 +78,8 @@ export async function sourceSnapshot(c, observer, ballot, items) {
   });
   const nonces = locks.filter(l => l.ok).map(l => l.nonce);
   const tally = Object.values(actual).reduce((counts, choice) => ({ ...counts, [choice]: (counts[choice] ?? 0) + 1 }), {});
-  return { url: observer.url, block, votes, ballots: actual, tally, voteCount: Object.keys(actual).length, locks,
+  return { url: observer.url, exploreUrl: observer.exploreUrl ?? observer.url,
+    block, votes, ballots: actual, tally, voteCount: Object.keys(actual).length, locks,
     ok: votes.ok && locks.every(l => l.ok) && new Set(nonces).size === locks.length };
 }
 

@@ -3,11 +3,23 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { keccak256 } from 'ethers';
+import { blake2b } from '@noble/hashes/blake2b';
+import { secp256k1 } from '@noble/curves/secp256k1';
 import { Chain, decodeRho, signDeploy, vaultAddress } from '../src/chain.mjs';
 import { makeWorkload, validateConfig, voteDifferences, submitWorkload } from '../src/workload.mjs';
 import { checkRow } from '../src/verify.mjs';
 
 const key = i => i.toString(16).padStart(64, '0');
+
+test('current deploy signatures bind the 32-byte field-15 phlo price', () => {
+  const signed = signDeploy(key(1), 'Nil', { timestamp: 1, phloLimit: 1, phloEncoding: 'uint256' });
+  const bytes = Buffer.from('12034e696c180140015a04726f6f747a20' + '00'.repeat(31) + '01', 'hex');
+  const digest = blake2b(bytes, { dkLen: 32 });
+  assert.equal(signed.data.phloPrice, '1');
+  assert.equal(secp256k1.verify(signed.signature, digest, signed.deployer), true);
+  const changed = signDeploy(key(1), 'Nil', { timestamp: 1, phloLimit: 1, phloEncoding: 'uint256', phloPrice: 2 });
+  assert.equal(secp256k1.verify(changed.signature, digest, changed.deployer), false);
+});
 const fixture = () => validateConfig({ ownerKey: key(1),
   voterKeys: Array.from({ length: 1000 }, (_, i) => key(i + 2)),
   bridgeKeys: Array.from({ length: 10 }, (_, i) => key(i + 1002)),

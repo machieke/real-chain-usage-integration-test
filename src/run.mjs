@@ -7,22 +7,25 @@ import { Contract, JsonRpcProvider, FetchRequest } from 'ethers';
 import { Chain, sleep } from './chain.mjs';
 import { makeWorkload, mapLimit, publicItem, submitWorkload, validateConfig } from './workload.mjs';
 import { bridgeQuery, snapshotTerm } from './terms.mjs';
+import * as acmp from './acmp-verify.mjs';
 import { bridgeAbi, tokenAbi, bridgeRows, sourceSnapshot, destinationSnapshot } from './verify.mjs';
 
 export async function run(config, log = console.log) {
   const c = validateConfig(config);
+  const verification = c.protocol === 'acmp' ? acmp : { bridgeRows, sourceSnapshot, destinationSnapshot };
   const dir = resolve(c.artifactDir ?? `artifacts/${new Date().toISOString().replaceAll(':', '-')}-${randomUUID().slice(0, 8)}`);
   await mkdir(dir, { recursive: true });
   const emit = event => appendFileSync(resolve(dir, 'events.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...event }) + '\n');
   const report = { passed: false, startedAt: new Date().toISOString(), artifactDir: dir,
-    scenario: { voters: c.voters, bridgeUsers: c.bridgeUsers, messagesPerUser: c.messagesPerUser,
+    scenario: { protocol: c.protocol ?? 'legacy', voters: c.voters, bridgeUsers: c.bridgeUsers, messagesPerUser: c.messagesPerUser,
       windowMs: c.windowMs, completionTimeoutMs: c.completionTimeoutMs,
       stabilityMs: c.stabilityMs, sourceChainId: c.sourceChainId, destinationChainId: c.destinationChainId,
       amount: c.amount, phloLimit: c.phloLimit, phloPrice: c.phloPrice, evmConfirmations: c.evmConfirmations },
     metadata: c.metadata ?? {}, errors: [] };
-  const chain = new Chain(c.chainUrl);
+  const chain = new Chain(c.chainUrl, { exploreUrl: c.exploreUrl });
+  chain.phloEncoding = c.phloEncoding;
   if (!c.observerUrls?.length) throw new Error('At least one observer URL is required for canonical state verification');
-  const observers = c.observerUrls.map(url => new Chain(url, { timeoutMs: 30_000 }));
+  const observers = c.observerUrls.map(url => new Chain(url, { timeoutMs: 30_000, exploreUrl: c.exploreUrl }));
   for (const client of [chain, ...observers]) client.signal = c.signal;
   const pool = new pg.Pool({ connectionString: c.databaseUrl, connectionTimeoutMillis: 5000, statement_timeout: 15_000 });
   const rpc = new FetchRequest(c.evmUrl);
@@ -33,17 +36,27 @@ export async function run(config, log = console.log) {
     log(`Artifacts: ${dir}`);
     const status = await chain.request('/status');
     if (!status.isReady) throw new Error('ASI node is not ready');
+    c.phloEncoding ??= typeof status.minPhloPrice === 'string' ? 'uint256' : 'legacy';
+    chain.phloEncoding = c.phloEncoding;
+    report.scenario.phloEncoding = c.phloEncoding;
     if (Number((await provider.getNetwork()).chainId) !== c.destinationChainId) throw new Error('Destination chain ID mismatch');
-    const token = new Contract(c.evmToken, tokenAbi, provider);
-    const bridge = new Contract(c.evmBridge, bridgeAbi, provider);
-    if ((await bridge.token()).toLowerCase() !== c.evmToken.toLowerCase()) throw new Error('Destination token mismatch');
-    const decimals = Number(await token.decimals());
-    if (decimals < 8) throw new Error('Destination decimals must be >= ASI shared decimals (8)');
+    let token, decimals;
+    if (c.protocol === 'acmp') {
+      const endpoint = new Contract(c.evmBridge, acmp.endpointAbi, provider);
+      if (await endpoint.trustedEndpoints(c.sourceChainId) !== c.sourceEndpointId ||
+          await endpoint.endpointId() !== c.destinationEndpointId) throw new Error('Destination endpoint domain mismatch');
+    } else {
+      token = new Contract(c.evmToken, tokenAbi, provider);
+      const bridge = new Contract(c.evmBridge, bridgeAbi, provider);
+      if ((await bridge.token()).toLowerCase() !== c.evmToken.toLowerCase()) throw new Error('Destination token mismatch');
+      decimals = Number(await token.decimals());
+      if (decimals < 8) throw new Error('Destination decimals must be >= ASI shared decimals (8)');
+    }
     await pool.query('SELECT 1 FROM relayed_messages LIMIT 1');
     for (const observer of observers) {
       const block = await observer.finalizedBlock();
-      const [allowed] = await observer.explore(bridgeQuery(c.bridgeUri, 'allowedDestinations'), block.blockHash);
-      if (!Array.isArray(allowed) || !allowed.includes(c.destinationChainId)) throw new Error('Bridge destination not enabled');
+      const [allowed] = await observer.explore(c.protocol === 'acmp' ? bridgeQuery(c.bridgeUri, 'trustedEndpoint', c.destinationChainId) : bridgeQuery(c.bridgeUri, 'allowedDestinations'), block.blockHash);
+      if (c.protocol === 'acmp' ? acmp.hex(allowed) !== c.destinationEndpointId : !Array.isArray(allowed) || !allowed.includes(c.destinationChainId)) throw new Error('Bridge destination not enabled');
     }
     log('Deploying the voting contract before the load window');
     const term = await readFile(new URL('../contracts/vote.rho', import.meta.url), 'utf8');
@@ -67,14 +80,14 @@ export async function run(config, log = console.log) {
       if (!ready) throw new Error(`Observer did not see voting contract: ${observer.url}`);
     }
     const blockNumber = await provider.getBlockNumber();
-    const balances = Object.fromEntries(await Promise.all([...new Set(c.recipients.map(r => r.toLowerCase()))]
-      .map(async recipient => [recipient, String(await token.balanceOf(recipient, { blockTag: blockNumber }))])));
-    const baseline = { blockNumber, balances, scale: 10n ** BigInt(decimals - 8) };
+    const balances = token ? Object.fromEntries(await Promise.all([...new Set(c.recipients.map(r => r.toLowerCase()))]
+      .map(async recipient => [recipient, String(await token.balanceOf(recipient, { blockTag: blockNumber }))]))) : {};
+    const baseline = { blockNumber, balances, scale: token ? 10n ** BigInt(decimals - 8) : 1n };
     report.destinationBaseline = { ...baseline, scale: String(baseline.scale) };
     items = makeWorkload(c, ballot, (await chain.finalizedBlock()).blockNumber, status.shardId);
     await writeFile(resolve(dir, 'manifest.json'), JSON.stringify(items.map(publicItem), null, 2));
     await writeFile(resolve(dir, 'signed-deploys.json'), JSON.stringify(items.map(i => i.signed), null, 2));
-    log(`Submitting ${c.voters} votes and ${c.bridgeUsers * c.messagesPerUser} bridge locks over ${c.windowMs / 1000}s`);
+    log(`Submitting ${c.voters} votes and ${c.bridgeUsers * c.messagesPerUser} bridge messages over ${c.windowMs / 1000}s`);
     report.submission = await submitWorkload(items, chain, c, emit);
     if (items.some(i => !i.accepted || i.finishedMs > 30_000 || i.startedMs >= c.windowMs)) {
       report.errors.push('Not every deploy was submitted within the load window and acknowledged within 30 seconds');
@@ -103,7 +116,7 @@ export async function run(config, log = console.log) {
         failed: items.filter(i => ['Failed', 'Expired'].includes(i.finality?.state)).length };
       let rows = [];
       try {
-        rows = await bridgeRows(pool, items.filter(i => i.kind === 'bridge'));
+        rows = await verification.bridgeRows(pool, items.filter(i => i.kind === 'bridge'));
         report.bridgeRows = rows;
       } catch (error) { report.lastReadError = error.message; }
       const progress = `${counts.finalized}/${items.length} finalized; ${rows.filter(r => r.location === 'archive').length}/${c.bridgeUsers * c.messagesPerUser} bridged`;
@@ -114,16 +127,19 @@ export async function run(config, log = console.log) {
         break;
       }
       let consistent = false;
-      if (counts.finalized === items.length) {
+      if (counts.finalized === items.length && rows.filter(r => r.location === 'archive').length === c.bridgeUsers * c.messagesPerUser) {
         try {
           report.sources = [];
-          for (const observer of observers) report.sources.push(await sourceSnapshot(c, observer, ballot, items));
-          report.destination = await destinationSnapshot(c, provider, rows, report.sources[0].locks,
+          for (const observer of observers) report.sources.push(await verification.sourceSnapshot(c, observer, ballot, items));
+          report.destination = await verification.destinationSnapshot(c, provider, rows, report.sources[0].locks,
             items.filter(i => i.kind === 'bridge'), baseline);
           const locks = JSON.stringify(report.sources[0].locks.map(l => [l.id, l.nonce]));
           consistent = report.sources.every(s => s.ok && JSON.stringify(s.locks.map(l => [l.id, l.nonce])) === locks) && report.destination.ok;
           delete report.lastReadError;
-        } catch (error) { report.lastReadError = error.message; }
+        } catch (error) {
+          report.lastReadError = error.message;
+          emit({ event: 'verification-read-error', error: error.message });
+        }
       }
       if (consistent && performance.now() < deadline) {
         if (stableSince === undefined) {

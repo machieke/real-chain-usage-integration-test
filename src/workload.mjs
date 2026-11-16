@@ -1,6 +1,7 @@
 import { signDeploy, vaultAddress, publicKey, sleep } from './chain.mjs';
 import { voteTerm, lockTerm } from './terms.mjs';
-import { isAddress } from 'ethers';
+import { messageTerm } from './acmp-terms.mjs';
+import { hexlify, toUtf8Bytes, isAddress } from 'ethers';
 
 export function validateConfig(config) {
   const c = { voters: 1000, bridgeUsers: 10, messagesPerUser: 10, windowMs: 25_000,
@@ -16,6 +17,7 @@ export function validateConfig(config) {
   for (const field of ['sourceChainId', 'destinationChainId']) {
     if (!Number.isSafeInteger(c[field]) || c[field] < 0) throw new Error(`Invalid ${field}`);
   }
+  if (c.protocol === 'acmp' && c.sourceApps?.length !== c.bridgeUsers) throw new Error('Provide one ACMP sender per bridge user');
   if (!c.recipients.every(isAddress)) throw new Error('Every recipient must be a valid EVM address');
   if (c.voterKeys.length !== c.voters || c.bridgeKeys.length !== c.bridgeUsers ||
       c.recipients.length !== c.bridgeUsers) throw new Error('Provide one key per user and one recipient per bridge user');
@@ -27,7 +29,8 @@ export function validateConfig(config) {
 export function makeWorkload(c, ballot, validAfterBlockNumber, shardId) {
   const items = [];
   const timestamp = Date.now();
-  const options = { timestamp, phloLimit: c.phloLimit, phloPrice: c.phloPrice, validAfterBlockNumber, shardId };
+  const options = { timestamp, phloLimit: c.phloLimit, phloPrice: c.phloPrice,
+    phloEncoding: c.phloEncoding, validAfterBlockNumber, shardId };
   for (let user = 0; user < c.voters; user++) {
     const choice = user % 2 === 0 ? 'yes' : 'no';
     items.push({ kind: 'vote', user, choice, voter: vaultAddress(c.voterKeys[user]),
@@ -37,9 +40,11 @@ export function makeWorkload(c, ballot, validAfterBlockNumber, shardId) {
   for (let user = 0; user < c.bridgeUsers; user++) {
     for (let message = 0; message < c.messagesPerUser; message++) {
       const slot = message * c.bridgeUsers + user;
-      items.push({ kind: 'bridge', user, message, amount: c.amount, recipient: c.recipients[user],
+      const payload = c.protocol === 'acmp' ? hexlify(toUtf8Bytes(JSON.stringify({ run: c.runId, user, message }))) : undefined;
+      items.push({ payload, kind: 'bridge', user, message, amount: c.amount, recipient: c.recipients[user],
         scheduledMs: (slot + 0.5) * c.windowMs / (c.bridgeUsers * c.messagesPerUser),
-        signed: signDeploy(c.bridgeKeys[user], lockTerm(c.bridgeUri, c.amount, c.recipients[user], c.destinationChainId),
+        signed: signDeploy(c.bridgeKeys[user], c.protocol === 'acmp' ? messageTerm(c.sourceApps[user].uri, payload) :
+          lockTerm(c.bridgeUri, c.amount, c.recipients[user], c.destinationChainId),
           { ...options, timestamp: timestamp + message }) });
     }
   }
@@ -86,14 +91,18 @@ export async function submitWorkload(items, chain, c, emit = () => {}) {
 export function publicItem({ signed, ...item }) { return { ...item, deployer: signed.deployer }; }
 
 export async function mapLimit(items, limit, fn) {
-  let index = 0;
+  let index = 0, failure;
   const results = new Array(items.length);
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (index < items.length) {
+    while (!failure && index < items.length) {
       const i = index++;
-      results[i] = await fn(items[i], i);
+      try { results[i] = await fn(items[i], i); }
+      catch (error) { failure ??= { error }; }
     }
   }));
+  // Drain already-started operations before returning an error. Otherwise a
+  // subsequent polling round can overlap abandoned workers from this one.
+  if (failure) throw failure.error;
   return results;
 }
 

@@ -1,7 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Chain, vaultAddress } from '../src/chain.mjs';
+import { Chain, decodeRho, vaultAddress } from '../src/chain.mjs';
 import { sourceSnapshot } from '../src/verify.mjs';
+
+test('BigInt values retain exact balances and safe lock amounts', () => {
+  assert.equal(decodeRho({ ExprBigInt: { data: '100000000' } }), 100000000);
+  assert.equal(decodeRho({ ExprBigInt: { data: '50000000000000001' } }), '50000000000000001');
+  assert.equal(decodeRho({ ExprInt: { data: '31337' } }), 31337);
+});
+
+test('observer exploration preserves the validator block hash and deploy reads stay on the validator', async t => {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls.push({ url, body: options.body && JSON.parse(options.body) });
+    return { ok: true, json: async () => ({ expr: [] }) };
+  });
+  const chain = new Chain('http://validator', { exploreUrl: 'http://readonly' });
+  await chain.explore('Nil', 'validator-finalized-hash');
+  await chain.data('deploy-id', 'inclusion');
+  assert.equal(calls[0].url, 'http://readonly/api/explore-deploy-by-block-hash');
+  assert.equal(calls[0].body.blockHash, 'validator-finalized-hash');
+  assert.equal(calls[1].url, 'http://validator/api/data-at-name-by-block-hash');
+});
 
 test('receipt reads use inclusion while durable vote/lock state uses the current finalized block', async () => {
   const key = '1'.padStart(64, '0');
@@ -46,4 +66,46 @@ test('execution checks share block reads, with fallback when the latest block is
   assert.equal(blocks, 1);
   assert.equal(fallbacks, 1);
   assert.equal(results[2].blockHash, 'successful-earlier-inclusion');
+});
+
+test('observer admission retries preserve the requested snapshot and never retry deploy writes', async t => {
+  const calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls.push({ url, body: options.body });
+    const busy = url.endsWith('/deploy') || calls.length === 1;
+    return { ok: !busy, status: busy ? 503 : 200, headers: { get: () => '0' },
+      json: async () => busy ? { error: 'observer_busy' } : { expr: [] } };
+  });
+  const chain = new Chain('http://validator', { exploreUrl: 'http://readonly' });
+  await chain.explore('Nil', 'fixed-finalized-hash');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], calls[1]);
+  await assert.rejects(chain.submit({ signature: 'id' }), /HTTP 503/);
+  assert.equal(calls.length, 3);
+});
+
+test('observer backoff cannot extend the completion deadline', async t => {
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: false, status: 503,
+    headers: { get: () => '15' }, json: async () => ({ error: 'observer_busy' }) }));
+  const chain = new Chain('http://readonly');
+  chain.deadline = performance.now() + 500;
+  await assert.rejects(chain.explore('Nil', 'block'), /Observer busy beyond/);
+});
+
+test('a failed read batch drains in-flight operations and admits no more work', async () => {
+  const { mapLimit } = await import('../src/workload.mjs');
+  let started = [], release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  let settled = false;
+  const result = mapLimit([0, 1, 2, 3], 2, async i => {
+    started.push(i);
+    if (i === 0) throw new Error('observer busy');
+    await blocked;
+  }).catch(error => { settled = true; return error; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.deepEqual(started, [0, 1]);
+  release();
+  assert.match((await result).message, /observer busy/);
+  assert.deepEqual(started, [0, 1]);
 });
