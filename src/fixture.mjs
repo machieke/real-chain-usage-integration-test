@@ -276,7 +276,7 @@ export async function localFixture({ voters = 1000, bridgeUsers = 10, log = cons
       ASI_OBSERVER_HTTP_PORT: String(network?.asiObserverHttpPort ?? new URL(network?.exploreUrl ?? chain.url).port),
       ASI_CHAIN_ID: '0', ETH_RPC_NODE: `http://127.0.0.1:${ports.evm}`, ETH_CHAIN_ID: '31337',
       ETH_PRIVATE_KEY: evmKey, PROOF_THRESHOLD: '2',
-      ...(acmp ? { ASI_ENDPOINT_URI: bridgeUri, ETH_ENDPOINT_ADDRESS: await bridge.getAddress(),
+      ...(acmp ? { DB_SCHEMA_MODE: 'bootstrap', ASI_ENDPOINT_URI: bridgeUri, ETH_ENDPOINT_ADDRESS: await bridge.getAddress(),
         DESTINATION_CHAINS: '31337:eth', ASI_RECOVERY_START_BLOCK: '0',
         ENDPOINT_DOMAIN_0_ENDPOINT_ID: sourceEndpointId, ENDPOINT_DOMAIN_31337_ENDPOINT_ID: destinationEndpointId } : {
         BRIDGE_SHARED_DECIMALS: '8', ASI_LOCAL_DECIMALS: '8', ASI_BRIDGE_URI: bridgeUri, ASI_START_BLOCK: '0',

@@ -162,3 +162,26 @@ The clean rerun **passed** against the same existing network:
 - Complete reconciliation and stability verification finished **809.86 seconds after submission** (13 minutes 30 seconds), inside the 900-second limit. State remained correct across later finalized blocks on all five nodes over **79.92 seconds**.
 
 Passing report: `artifacts/2026-11-16T13-46-47.915Z-0a579339/report.json`. The fixture cleaned up its EVM/oracle/PostgreSQL services; the existing ASI validator network remained running and healthy.
+
+
+## Existing network at height 31,890 — 2026-11-20
+
+A repeat of the same 1,000-voter / 100-message ACMP workload **failed the 900-second convergence deadline**. The source deployment height was **31,890**, compared with **592** in the passing November 16 run. The bridge revision and oracle image were unchanged; the chain was now running `0380cbbd4` with deploy-queue services.
+
+| Measurement | Height 592 baseline | Height 31,890 run |
+| --- | ---: | ---: |
+| Accepted deploys | 1,100 / 1,100 | 1,100 / 1,100 |
+| Burst acknowledgement duration | 24.978 s | 24.982 s |
+| Request latency, p95 | 27.29 ms | 16.46 ms |
+| All deploys finalized after burst | 523.13 s | Not complete at 900 s |
+| Finalized deploys at completion/deadline | 1,100 | 723 |
+| Archived bridge messages | 100 / 100 | 19 / 100 |
+| Consistency result | PASS at 809.86 s | Deadline exceeded |
+
+At the deadline, 704 votes and 19 bridge deploys were finalized; **296 votes and 81 bridge deploys remained Pending**. No deploy was observed in `Failed` or `Expired`, and no finalized execution reported an error. Full source/destination reconciliation was not reached, so the 19 archived bridge messages were not independently reverified by the final consistency check. Pending deploys are not evidence of permanent message loss.
+
+The read-only replica lag grew from 22 to 35 blocks during the run; a post-deadline observation found it 61 blocks behind the leading validators. Oracle worker health was healthy with zero consecutive failures near the deadline. The host had 8 available CPUs and averaged **99.86% CPU busy** during the sampled workload, with load average reaching 46.34. Completion was slower under these conditions, but the changed chain build and CPU contention prevent attributing the difference to block height alone. Polling times are observations rather than exact consensus timestamps.
+
+An initial setup attempt stopped before workload submission because an oracle migration deadlocked against another worker. The fixture now passes `DB_SCHEMA_MODE=bootstrap` after creating the complete schema itself, avoiding repeated worker migrations. This only changes setup; the timed workload, observer targets, verification rules, and deadline remain the same. The resumed setup succeeded, and only one timed burst was submitted for this comparison.
+
+Evidence: `artifacts/2026-11-20T13-54-33.512Z-0f21e473/report.json`, `performance-comparison.json`, `performance-comparison.png`, `network-before.json`, `network-after.json`, and the saved host/oracle diagnostics in the same directory. The existing validator network remained running; the fixture cleaned up its own services.
