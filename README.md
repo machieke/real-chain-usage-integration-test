@@ -185,3 +185,28 @@ The read-only replica lag grew from 22 to 35 blocks during the run; a post-deadl
 An initial setup attempt stopped before workload submission because an oracle migration deadlocked against another worker. The fixture now passes `DB_SCHEMA_MODE=bootstrap` after creating the complete schema itself, avoiding repeated worker migrations. This only changes setup; the timed workload, observer targets, verification rules, and deadline remain the same. The resumed setup succeeded, and only one timed burst was submitted for this comparison.
 
 Evidence: `artifacts/2026-11-20T13-54-33.512Z-0f21e473/report.json`, `performance-comparison.json`, `performance-comparison.png`, `network-before.json`, `network-after.json`, and the saved host/oracle diagnostics in the same directory. The existing validator network remained running; the fixture cleaned up its own services.
+
+## Existing network after stopping Chrome, height 32,505 — 2026-11-20
+
+The same workload **passed** after Chrome was stopped, without restarting or resetting the existing ASI network. This run used fresh accounts and contracts, the same chain revision `0380cbbd4` and immutable oracle image as the earlier high-height run, and unchanged submission and verification rules. Before setup, all five nodes agreed on finalized height 32,380; the timed workload started at height **32,505**. No Chrome processes were found before or after the run.
+
+| Measurement | Height 592 baseline | Height 31,890, CPU saturated | Height 32,505, Chrome stopped |
+| --- | ---: | ---: | ---: |
+| Accepted deploys | 1,100 / 1,100 | 1,100 / 1,100 | 1,100 / 1,100 |
+| Burst acknowledgement duration | 24.978 s | 24.982 s | 24.982 s |
+| Request latency, p95 | 27.29 ms | 16.46 ms | 6.81 ms |
+| All deploys finalized after burst | 523.13 s | Not complete at 900 s | 303.13 s |
+| All bridge messages archived after burst | 653.29 s | Not complete at 900 s | 323.16 s |
+| Finalized deploys at completion/deadline | 1,100 | 723 | 1,100 |
+| Archived bridge messages | 100 / 100 | 19 / 100 | 100 / 100 |
+| Full reconciliation and stability after archival | 156.57 s | Not reached | 271.97 s |
+| Consistency result, time after burst | PASS at 809.86 s | Deadline exceeded | PASS at 595.13 s |
+| Mean sampled host CPU busy | Not recorded | 99.86% | 65.01% |
+
+All **1,000 votes and 100 bridge deploys finalized**, with zero failed or unresolved deploys and no execution errors. Every configured node's finalized snapshot contained the exact 1,000-voter map (500 yes / 500 no) and 100 matching source packets. All **100 destination messages** passed independent verification, including exact payloads, 100 receive events, 100 process events, canonical receipts, and two confirmations. No missing or duplicate effects were observed. The active oracle queue was empty. Correct state persisted across later finalized blocks on all five nodes over **137.96 seconds**; final snapshot heights ranged from 32,657 to 32,690.
+
+Overall completion was **26.5% faster** than the low-height baseline; finalization was 42.1% faster and archival was 50.5% faster. However, the full reconciliation and stability phase was **73.7% slower** (271.97 versus 156.57 seconds). This run therefore shows no overall completion slowdown at 32k height, but it does show slower verification. These phase timings do not isolate which reads slowed down or establish a block-height cause: the low-height run used a different chain build, and its CPU utilization was not recorded. The two high-height runs used the same builds but different host load and starting chain state. CPU samples were collected every 15 seconds; the current workload averaged 65.01% busy and peaked at 93.42%, compared with 99.86% average in the saturated run. Finality and archival times are polling observations.
+
+A separate read-only follow-up at 14:32 UTC checked the previous saturated run's 377 unresolved deploys: **238 had finalized later** (168 votes, 70 bridge deploys), while **139 were marked Expired** (128 votes, 11 bridge deploys). This does not change that run's original failed report or establish destination delivery for its later-finalized bridge deploys. The successful new run used separate identities and did not resubmit the previous workload.
+
+Evidence: `artifacts/2026-11-20T14-39-46.966Z-9f059ce6/report.json`, `performance-comparison.json`, `performance-comparison.png`, `performance-comparison.svg`, `network-before.json`, `network-after.json`, `network-samples.jsonl`, `host-samples.jsonl`, `host-utilization-summary.json`, and `previous-run-followup.json`. These local artifacts remain excluded from Git. The harness implementation was unchanged during this rerun. The fixture cleaned up all its own services; all eight existing ASI node/deploy-queue containers stayed running and healthy, and all five read endpoints agreed on finalized height 32,710 after cleanup.
