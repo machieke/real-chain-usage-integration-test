@@ -18,6 +18,13 @@ export const sleep = ms => new Promise(resolve => setTimeout(resolve, Math.max(0
 export const hex = bytes => Buffer.from(bytes).toString('hex');
 export const publicKey = key => hex(secp256k1.getPublicKey(key.replace(/^0x/, ''), false));
 
+export function phloLimitForNode(requested, maximum) {
+  if (!Number.isSafeInteger(requested) || requested <= 0) throw new Error('Invalid phloLimit');
+  if (maximum === undefined) return requested; // Older nodes do not advertise a cap.
+  if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new Error('Invalid node maxPhloLimit');
+  return Math.min(requested, maximum);
+}
+
 export function vaultAddress(key) {
   const eth = getBytes(keccak256(getBytes(`0x${publicKey(key).slice(2)}`))).slice(-20);
   const payload = Buffer.concat([Buffer.alloc(4), getBytes(keccak256(eth))]);
@@ -141,7 +148,8 @@ export class Chain {
     throw new Error(`Deploy ${id} did not finalize in ${timeoutMs}ms`);
   }
   async deploy(key, term, options = {}) {
-    const signed = signDeploy(key, term, { phloEncoding: this.phloEncoding ?? 'legacy', ...options });
+    const signed = signDeploy(key, term, { phloEncoding: this.phloEncoding ?? 'legacy', ...options,
+      phloLimit: phloLimitForNode(options.phloLimit ?? 100_000_000, this.maxPhloLimit) });
     await this.submit(signed);
     const detail = await this.waitFinalized(signed.signature);
     if (detail.errored || detail.systemDeployError) throw new Error(`Deploy execution failed: ${signed.signature}`);

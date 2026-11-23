@@ -150,6 +150,7 @@ export async function localFixture({ voters = 1000, bridgeUsers = 10, log = cons
     }, 'ASI genesis');
     const status = await chain.request('/status');
     chain.phloEncoding = typeof status.minPhloPrice === 'string' ? 'uint256' : 'legacy';
+    chain.maxPhloLimit = status.maxPhloLimit;
     if (network) {
       log(`Using existing ASI network at ${chain.url}; fixture logs: ${dir}`);
       await fundAccounts(chain, network.funderKey, [

@@ -5,11 +5,37 @@ import { once } from 'node:events';
 import { keccak256 } from 'ethers';
 import { blake2b } from '@noble/hashes/blake2b';
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { Chain, decodeRho, signDeploy, vaultAddress } from '../src/chain.mjs';
+import { Chain, decodeRho, phloLimitForNode, signDeploy, vaultAddress } from '../src/chain.mjs';
 import { makeWorkload, validateConfig, voteDifferences, submitWorkload } from '../src/workload.mjs';
 import { checkRow } from '../src/verify.mjs';
 
 const key = i => i.toString(16).padStart(64, '0');
+
+test('node phlo caps preserve smaller budgets and support older nodes', () => {
+  assert.equal(phloLimitForNode(100_000_000, 20_000_000), 20_000_000);
+  assert.equal(phloLimitForNode(1_000_000, 20_000_000), 1_000_000);
+  assert.equal(phloLimitForNode(5_000_000_000, undefined), 5_000_000_000);
+  for (const maximum of [0, -1, 1.5, null, 'bad', Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => phloLimitForNode(100_000_000, maximum), /maxPhloLimit/);
+  }
+});
+
+test('setup deploys sign the capped budget before submission', async () => {
+  const client = new Chain('http://unused');
+  client.phloEncoding = 'uint256';
+  client.maxPhloLimit = 20_000_000;
+  const submitted = [];
+  client.submit = async signed => { submitted.push(signed); };
+  client.waitFinalized = async () => ({ blockHash: 'block', errored: false });
+  client.data = async () => [];
+  for (const phloLimit of [undefined, 5_000_000_000, 500_000_000, 1_000_000]) {
+    await client.deploy(key(1), 'Nil', { timestamp: 1, phloLimit });
+    const expected = phloLimit === 1_000_000 ? 1_000_000 : 20_000_000;
+    assert.deepEqual(submitted.at(-1), signDeploy(key(1), 'Nil', {
+      timestamp: 1, phloLimit: expected, phloEncoding: 'uint256' }));
+  }
+  assert.equal(submitted.length, 4);
+});
 
 test('current deploy signatures bind the 32-byte field-15 phlo price', () => {
   const signed = signDeploy(key(1), 'Nil', { timestamp: 1, phloLimit: 1, phloEncoding: 'uint256' });
@@ -28,8 +54,10 @@ const fixture = () => validateConfig({ ownerKey: key(1),
 
 test('1000 distinct voters and 10 distinct bridge users submit 100 distinct locks inside one window', () => {
   const c = fixture();
+  c.phloLimit = phloLimitForNode(c.phloLimit, 20_000_000);
   const items = makeWorkload(c, 'rho:id:ballot', 10, 'root');
   assert.equal(items.length, 1100);
+  assert.ok(items.every(i => i.signed.data.phloLimit === 20_000_000));
   assert.equal(new Set(items.map(i => i.id)).size, 1100);
   assert.equal(new Set(items.filter(i => i.kind === 'vote').map(i => i.signed.deployer)).size, 1000);
   for (let user = 0; user < 10; user++) {

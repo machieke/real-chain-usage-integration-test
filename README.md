@@ -98,6 +98,8 @@ To provision fresh test accounts and the bridge pipeline on an already-running A
 
 The fixture detects the chain's phlo-price format from `/status`, supporting legacy integers and the current decimal-string / 32-byte protobuf encoding. For the latter it signs and submits the original bridge template over HTTP, using the registry signature format from `rust-client`. Fresh account keys are retained privately under `.local/usage-*/accounts.json`. Set `accountsFile` in the network configuration to resume interrupted setup with those keys; funding checks finalized balances and transfers only a deficit. Default funding is 3 ASI per voter, 50 per bridge user, and 100 for the owner, plus the funder's transaction fees.
 
+When `/status` advertises `maxPhloLimit`, setup and workload deploy budgets are capped before signing. The report records the requested limit, advertised maximum, and actual workload limit. Funding preserves its original allowance of one million phlo per recipient by reducing the batch size: a 20-million cap uses batches of 20 accounts instead of 100. Funding and contract setup remain outside the timed workload. Older nodes without an advertised cap retain the previous budgets.
+
 Provide a private JSON configuration, with **already-funded distinct ASI keys**, a configured bridge and working oracle services, and dedicated EVM recipient addresses. Do not use shared recipients receiving unrelated transfers during a run. The runner deploys a fresh ballot and submits real transactions using the supplied accounts.
 
 ```bash
@@ -125,7 +127,7 @@ npm run test:live -- /secure/path/usage-config.json
 }
 ```
 
-The defaults use a phlo price of 1 and a 100,000,000 phlo limit per workload deploy. Each bridge lock transfers 100,000,000 raw ASI units (1 ASI). Fund each signer for deploy precharges and bridge amounts; provide enough destination liquidity. Source and shared decimals are 8. All configured observers must support exploratory reads at explicit finalized block hashes and the submit node must expose `/api/deploy-finalization-status`.
+The defaults request a phlo price of 1 and a 100,000,000 phlo limit per workload deploy, bounded by the node's advertised cap when present. Each bridge lock transfers 100,000,000 raw ASI units (1 ASI). Fund each signer for deploy precharges and bridge amounts; provide enough destination liquidity. Source and shared decimals are 8. All configured observers must support exploratory reads at explicit finalized block hashes and the submit node must expose `/api/deploy-finalization-status`.
 
 ## Evidence
 
@@ -210,3 +212,29 @@ Overall completion was **26.5% faster** than the low-height baseline; finalizati
 A separate read-only follow-up at 14:32 UTC checked the previous saturated run's 377 unresolved deploys: **238 had finalized later** (168 votes, 70 bridge deploys), while **139 were marked Expired** (128 votes, 11 bridge deploys). This does not change that run's original failed report or establish destination delivery for its later-finalized bridge deploys. The successful new run used separate identities and did not resubmit the previous workload.
 
 Evidence: `artifacts/2026-11-20T14-39-46.966Z-9f059ce6/report.json`, `performance-comparison.json`, `performance-comparison.png`, `performance-comparison.svg`, `network-before.json`, `network-after.json`, `network-samples.jsonl`, `host-samples.jsonl`, `host-utilization-summary.json`, and `previous-run-followup.json`. These local artifacts remain excluded from Git. The harness implementation was unchanged during this rerun. The fixture cleaned up all its own services; all eight existing ASI node/deploy-queue containers stayed running and healthy, and all five read endpoints agreed on finalized height 32,710 after cleanup.
+
+## Existing network on build 2aa0e81db, height 801 — 2026-11-23
+
+The repeat **passed** with the same 1,000-voter / 100-message ACMP workload and 900-second convergence deadline. Before this invocation, the existing network was already running chain revision `2aa0e81db85f903638336c2ea19b51385752ea35` at finalized height 453. The harness did not restart or reset it. The timed workload began at height **801**, so this is a repeat on the current network, not another 32k-height measurement. The bridge revision `d29a723` and immutable oracle image were unchanged.
+
+The node now advertises a **20,000,000 phlo maximum**. An initial funding request was rejected because the harness requested 100,000,000; after capping budgets, a 100-account funding transaction exhausted its 20,000,000 budget and setup timed out while its deploy state remained Pending. Node execution logs confirmed the out-of-phlo error. Both attempts stopped before the timed workload. The harness now applies the advertised cap before signing and scales funding batches with the available budget. Resumed setup checked finalized balances and funded 1,011 accounts in 51 batches of at most 20 accounts; the largest batch consumed 4,896,533 phlo. Exactly one timed workload was submitted, without resubmissions.
+
+| Measurement | November 20 pass, height 32,505 | November 23 pass, height 801 |
+| --- | ---: | ---: |
+| Workload phlo limit per deploy | 100,000,000 | 20,000,000 |
+| Accepted deploys | 1,100 / 1,100 | 1,100 / 1,100 |
+| Burst acknowledgement duration | 24.982 s | 24.978 s |
+| Request latency, p95 | 6.81 ms | 7.13 ms |
+| All deploys finalized after burst | 303.13 s | 232.91 s |
+| All bridge messages archived after burst | 323.16 s | 272.95 s |
+| Full reconciliation and stability after archival | 271.97 s | 365.43 s |
+| Full consistency pass after burst | 595.13 s | 638.37 s |
+| Mean sampled host CPU busy | 65.01% | 55.72% |
+
+All **1,100 deploys finalized**, with zero failed or unresolved workload deploys and no execution errors. Each of the five finalized source snapshots contained exactly 1,000 votes (500 yes / 500 no) and 100 matching packets. All **100 EVM deliveries** passed independent payload, receipt, confirmation, and event checks: exactly 100 receive events and 100 process events, with no missing or duplicate effects and no active oracle queue rows. Complete state remained correct across later finalized blocks on every node over **185.89 seconds**; final snapshot heights ranged from 949 to 989.
+
+Finalization was 23.2% faster and archival 15.5% faster than the previous pass, but reconciliation and stability verification took 34.4% longer. Overall completion was **7.3% slower**, at **10 minutes 38 seconds** after the burst, still within the 15-minute deadline. The changed chain build, starting height/state, phlo budget, and host utilization prevent isolating a block-height effect or attributing the slower verification to a particular cause. Setup time is excluded from these phase timings; finality and archival completion are polling observations.
+
+All **23 harness checks passed**, including the new coverage for capped signatures, older nodes without a cap, and funding batches with a partial final batch. The final report, signed workload, source/destination evidence, and cleanup were also checked. All eight original ASI containers retained their identities and start times and remained healthy; the five read endpoints agreed on finalized height 1,026 after cleanup. Only the fixture's own services were stopped.
+
+Evidence: `artifacts/2026-11-23T12-40-12.551Z-1c60dd6a/report.json`, `performance-comparison.json`, `performance-comparison.png`, `performance-comparison.svg`, `network-before.json`, `network-after.json`, host/network samples, `funding-summary.json`, `harness-tests.log`, `run.log`, and the separate setup diagnostics in that directory. Artifacts remain local and excluded from Git.

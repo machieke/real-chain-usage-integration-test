@@ -1,5 +1,5 @@
 import { appendFile } from 'node:fs/promises';
-import { vaultAddress } from './chain.mjs';
+import { phloLimitForNode, vaultAddress } from './chain.mjs';
 
 export function fundingTerm(from, recipients) {
   const entries = recipients.map(({ address, amount }) => `(${JSON.stringify(address)}, ${amount})`).join(', ');
@@ -61,8 +61,12 @@ function balancesTerm(addresses) {
 export async function fundAccounts(chain, funderKey, accounts, log, journal) {
   const status = await chain.request('/status');
   const from = vaultAddress(funderKey);
-  for (let offset = 0; offset < accounts.length; offset += 100) {
-    const requested = accounts.slice(offset, offset + 100);
+  const phloLimit = phloLimitForNode(100_000_000, chain.maxPhloLimit);
+  // Preserve the original provisioning allowance of one million phlo per
+  // recipient when a node's cap requires smaller funding transactions.
+  const batchSize = Math.max(1, Math.min(100, Math.floor(phloLimit / 1_000_000)));
+  for (let offset = 0; offset < accounts.length; offset += batchSize) {
+    const requested = accounts.slice(offset, offset + batchSize);
     const block = await chain.finalizedBlock();
     const balances = {};
     for (let index = 0; index < requested.length; index += 10) {
@@ -76,9 +80,10 @@ export async function fundAccounts(chain, funderKey, accounts, log, journal) {
     }).filter(a => a.amount > 0);
     if (!batch.length) { log(`Already funded ${offset + requested.length}/${accounts.length} accounts`); continue; }
     const result = await chain.deploy(funderKey, fundingTerm(from, batch), {
-      shardId: status.shardId, validAfterBlockNumber: (await chain.finalizedBlock()).blockNumber,
+      shardId: status.shardId, phloLimit, validAfterBlockNumber: (await chain.finalizedBlock()).blockNumber,
     });
-    await appendFile(journal, JSON.stringify({ deployId: result.id, accounts: batch, result: result.data }) + '\n', { mode: 0o600 });
+    await appendFile(journal, JSON.stringify({ deployId: result.id, accounts: batch, result: result.data,
+      cost: result.detail?.cost, phloLimit }) + '\n', { mode: 0o600 });
     if (result.data.length !== 1 || batch.some(({ address, amount }) => result.data[0]?.[address] !== amount)) {
       throw new Error(`Funding batch at ${offset} did not transfer every expected amount; inspect ${journal}`);
     }
