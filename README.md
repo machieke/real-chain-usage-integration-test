@@ -238,3 +238,26 @@ Finalization was 23.2% faster and archival 15.5% faster than the previous pass, 
 All **23 harness checks passed**, including the new coverage for capped signatures, older nodes without a cap, and funding batches with a partial final batch. The final report, signed workload, source/destination evidence, and cleanup were also checked. All eight original ASI containers retained their identities and start times and remained healthy; the five read endpoints agreed on finalized height 1,026 after cleanup. Only the fixture's own services were stopped.
 
 Evidence: `artifacts/2026-11-23T12-40-12.551Z-1c60dd6a/report.json`, `performance-comparison.json`, `performance-comparison.png`, `performance-comparison.svg`, `network-before.json`, `network-after.json`, host/network samples, `funding-summary.json`, `harness-tests.log`, `run.log`, and the separate setup diagnostics in that directory. Artifacts remain local and excluded from Git.
+
+## Existing network on build f7ef1bca1, height 971 — 2026-11-24
+
+The same workload **passed** on the existing network running chain revision `f7ef1bca13713800ae7e04bef33387012bd36965`. The network was already running this build at approximately finalized height 730 before invocation; the harness did not restart or reset it. Fresh accounts were funded in 51 batches, and exactly one timed workload was submitted, starting at height **971**. Setup completed on the first attempt, with no workload resubmissions or harness changes. The harness implementation at `941441d`, bridge revision `d29a723`, immutable oracle image, full scenario configuration, observer endpoints, and verification rules were unchanged from the November 23 pass; both workloads used the node-advertised 20-million-phlo limit.
+
+| Measurement | November 23 pass, height 801 | November 24 pass, height 971 |
+| --- | ---: | ---: |
+| Accepted deploys | 1,100 / 1,100 | 1,100 / 1,100 |
+| Burst acknowledgement duration | 24.978 s | 24.979 s |
+| Request latency, p95 | 7.13 ms | 7.30 ms |
+| All deploys finalized after burst | 232.91 s | 242.29 s |
+| All bridge messages archived after burst | 272.95 s | 292.35 s |
+| Full reconciliation and stability after archival | 365.43 s | 396.22 s |
+| Full consistency pass after burst | 638.37 s | 688.56 s |
+| Mean sampled host CPU busy | 55.72% | 56.74% |
+
+All **1,000 votes and 100 bridge deploys finalized**, with zero failed or unresolved workload deploys and no execution errors. Every configured node's finalized snapshot contained the exact 1,000-voter map (500 yes / 500 no) and 100 matching packets. All **100 EVM deliveries** passed independent verification, including exact payloads, canonical receipts with two confirmations, 100 receive events, and 100 process events. No missing or duplicate effects were observed, and the active oracle queue was empty. Correct state persisted across later finalized blocks on every node over **203.11 seconds**; final snapshot heights ranged from 1,132 to 1,173.
+
+Full completion took **11 minutes 28.56 seconds** after the burst, inside the 900-second limit and **7.9% slower** than the previous pass. Finalization took 4.0% longer, archival 7.1% longer, and reconciliation plus stability 8.4% longer. Host utilization was similar, averaging 56.74% busy and peaking at 94.47%. This is one observation on each build with different starting chain state; it does not isolate a build or block-height effect. Setup remains excluded from these timings, and finality/archival completion are polling observations.
+
+The report, signed workload, complete source/destination evidence, matching scenario and bridge configuration, and cleanup were checked. All eight original ASI containers retained their identities and start times and remained healthy. After cleanup, the five read endpoints were ready at finalized heights 1,210–1,211; no containers belonging to this fixture remained running.
+
+Evidence: `artifacts/2026-11-24T12-44-11.862Z-bcf2b39e/report.json`, `performance-comparison.json`, `performance-comparison.png`, `performance-comparison.svg`, `network-before.json`, `network-after.json`, host/network samples, `funding-summary.json`, `evidence-checks.json`, and `run.log`. Artifacts remain local and excluded from Git.
